@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Deriv Digit Bot - Web Dashboard</title>
+
+<style>
+body {
+    background: #0f172a;
+    color: #e2e8f0;
+    font-family: Arial;
+    text-align: center;
+}
+
+.container {
+    width: 800px;
+    margin: auto;
+    margin-top: 40px;
+}
+
+button {
+    padding: 10px 20px;
+    margin: 5px;
+    background: #2563eb;
+    border: none;
+    color: white;
+    cursor: pointer;
+}
+
+button:hover {
+    background: #1d4ed8;
+}
+
+.card {
+    background: #1e293b;
+    padding: 20px;
+    margin-top: 20px;
+    border-radius: 10px;
+}
+
+.log {
+    height: 200px;
+    overflow-y: scroll;
+    background: black;
+    padding: 10px;
+    text-align: left;
+    font-size: 12px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+    <h1>Deriv Digit Bot (Web Mode)</h1>
+
+    <div class="card">
+        <input type="password" id="password" placeholder="Enter Password">
+        <button onclick="authenticate()">Start Bot</button>
+        <button onclick="stopBot()">Stop</button>
+        <button onclick="getBalance()">Balance</button>
+    </div>
+
+    <div class="card">
+        <h3>Stats</h3>
+        <p id="stats"></p>
+    </div>
+
+    <div class="card">
+        <h3>Logs</h3>
+        <div class="log" id="log"></div>
+    </div>
+</div>
+
+<script>
+const API_TOKEN = "bU0Ml9eSmMSkv0g";
+const PASSWORD = "Anto";
+const INDEX_LIST = ['1HZ10V','1HZ50V','1HZ100V'];
+
+let ws;
+let authorized = false;
+let running = false;
+
+let currentStake = 1;
+let wins = 0;
+let losses = 0;
+let total = 0;
+
+let tradeInProgress = false;
+let cooldownTicks = 0;
+let lastLostIndex = null;
+let nextIndexIdx = 0;
+
+function log(msg){
+    const logBox = document.getElementById("log");
+    logBox.innerHTML += msg + "<br>";
+    logBox.scrollTop = logBox.scrollHeight;
+}
+
+function updateStats(){
+    document.getElementById("stats").innerHTML =
+        `Wins: ${wins} | Losses: ${losses} | Total: ${total} | Stake: $${currentStake} | Cooldown: ${cooldownTicks}`;
+}
+
+function authenticate(){
+    const pass = document.getElementById("password").value;
+    if(pass !== PASSWORD){
+        alert("Wrong password");
+        return;
+    }
+
+    connectWS();
+}
+
+function stopBot(){
+    running = false;
+    if(ws) ws.close();
+    log("Bot stopped.");
+}
+
+function connectWS(){
+    ws = new WebSocket("wss://ws.derivws.com/websockets/v3?app_id=1089");
+
+    ws.onopen = () => {
+        ws.send(JSON.stringify({authorize: API_TOKEN}));
+    };
+
+    ws.onmessage = (msg) => {
+        const data = JSON.parse(msg.data);
+
+        if(data.msg_type === "authorize"){
+            authorized = true;
+            running = true;
+            log("Authorized.");
+            subscribeAll();
+        }
+
+        if(data.msg_type === "tick"){
+            handleTick(data);
+        }
+
+        if(data.msg_type === "buy"){
+            log("Trade placed.");
+            ws.send(JSON.stringify({
+                proposal_open_contract: 1,
+                contract_id: data.buy.contract_id,
+                subscribe: 1
+            }));
+        }
+
+        if(data.msg_type === "proposal_open_contract"){
+            if(data.proposal_open_contract.is_sold){
+                handleTradeResult(data.proposal_open_contract.profit);
+            }
+        }
+
+        if(data.msg_type === "balance"){
+            log("Balance: $" + data.balance.balance);
+        }
+    };
+}
+
+function subscribeAll(){
+    INDEX_LIST.forEach(symbol => {
+        ws.send(JSON.stringify({
+            ticks: symbol,
+            subscribe: 1
+        }));
+        log("Subscribed to " + symbol);
+    });
+}
+
+function handleTick(data){
+    if(!running) return;
+
+    const digit = parseInt(data.tick.quote.toString().slice(-1));
+
+    if(cooldownTicks > 0){
+        cooldownTicks--;
+        updateStats();
+        return;
+    }
+
+    if(tradeInProgress) return;
+
+    if(digit === 1){
+        executeTrade(data.tick.symbol);
+    }
+}
+
+function executeTrade(index){
+
+    tradeInProgress = true;
+
+    let selectedIndex = index;
+
+    if(lastLostIndex === index){
+        selectedIndex = INDEX_LIST[nextIndexIdx];
+    }
+
+    log("Digit 1 detected on " + selectedIndex + " placing DIGITDIFF ≠ 6");
+
+    ws.send(JSON.stringify({
+        buy: 1,
+        price: currentStake,
+        parameters: {
+            amount: currentStake,
+            basis: "stake",
+            contract_type: "DIGITDIFF",
+            currency: "USD",
+            duration: 4,
+            duration_unit: "t",
+            symbol: selectedIndex,
+            barrier: "6"
+        }
+    }));
+}
+
+function handleTradeResult(profit){
+
+    total++;
+
+    if(profit > 0){
+        wins++;
+        currentStake = 1;
+        log("WIN: $" + profit);
+    } else {
+        losses++;
+        currentStake *= 14;
+        log("LOSS: $" + profit);
+
+        lastLostIndex = INDEX_LIST[nextIndexIdx];
+        nextIndexIdx = (nextIndexIdx + 1) % INDEX_LIST.length;
+    }
+
+    tradeInProgress = false;
+    cooldownTicks = 50;
+
+    updateStats();
+}
+
+function getBalance(){
+    ws.send(JSON.stringify({balance:1}));
+}
+</script>
+
+</body>
+</html>
